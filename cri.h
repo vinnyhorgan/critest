@@ -31,6 +31,9 @@ void cri_destroy_window(cri_Window *window);
 int cri_window_should_close(cri_Window *window);
 void cri_poll_events(void);
 
+int cri_update_buffer(cri_Window *window, void *buffer, int width, int height);
+int cri_set_viewport(cri_Window *window, int ox, int oy, int width, int height);
+
 #ifdef __cplusplus
 }
 #endif
@@ -87,8 +90,16 @@ struct cri_Window {
     int resizable;
     int min_width, min_height, max_width, max_height;
 
+    int width, height;
+
+    void *buffer;
+    int buffer_width, buffer_height;
+    int viewport_ox, viewport_oy, viewport_width, viewport_height;
+
 #ifdef _WIN32
     HWND hwnd;
+    HDC hdc;
+    BITMAPINFO *bmi;
 #endif
 };
 
@@ -178,6 +189,27 @@ static LRESULT CALLBACK cri__window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
         return DefWindowProcW(hwnd, msg, wparam, lparam);
 
     switch (msg) {
+        case WM_PAINT: {
+            if (window->buffer) {
+                StretchDIBits(window->hdc, window->viewport_ox, window->viewport_oy, window->viewport_width, window->viewport_height,
+                            0, 0, window->buffer_width, window->buffer_height,
+                            window->buffer, window->bmi, DIB_RGB_COLORS, SRCCOPY);
+                ValidateRect(hwnd, NULL);
+            }
+            break;
+        }
+
+        case WM_SIZE: {
+            window->width = LOWORD(lparam);
+            window->height = HIWORD(lparam);
+            window->viewport_ox = 0;
+            window->viewport_oy = 0;
+            window->viewport_width = window->width;
+            window->viewport_height = window->height;
+            BitBlt(window->hdc, 0, 0, window->width, window->height, 0, 0, 0, BLACKNESS);
+            return 0;
+        }
+
         case WM_CLOSE:
             window->should_close = CRI_TRUE;
             break;
@@ -244,10 +276,38 @@ static int cri__platform_create_window(cri_Window *window, int width, int height
 
     SetPropW(window->hwnd, L"CRI", window);
 
+    window->hdc = GetDC(window->hwnd);
+
+    window->bmi = calloc(1, sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * 3);
+    if (!window->bmi) {
+        cri__error(CRI_PLATFORM_ERROR, "failed to allocate bitmap");
+        return CRI_FALSE;
+    }
+
+    window->bmi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    window->bmi->bmiHeader.biPlanes = 1;
+    window->bmi->bmiHeader.biBitCount = 32;
+    window->bmi->bmiHeader.biCompression = BI_BITFIELDS;
+    window->bmi->bmiHeader.biWidth = window->buffer_width;
+    window->bmi->bmiHeader.biHeight = -(LONG) window->buffer_height;
+    window->bmi->bmiColors[0].rgbRed = 0xff;
+    window->bmi->bmiColors[1].rgbGreen = 0xff;
+    window->bmi->bmiColors[2].rgbBlue = 0xff;
+
     return CRI_TRUE;
 }
 
 static void cri__platform_destroy_window(cri_Window *window) {
+    if (window->bmi) {
+        free(window->bmi);
+        window->bmi = NULL;
+    }
+
+    if (window->hdc) {
+        ReleaseDC(window->hwnd, window->hdc);
+        window->hdc = NULL;
+    }
+
     if (window->hwnd) {
         RemovePropW(window->hwnd, L"CRI");
         DestroyWindow(window->hwnd);
@@ -369,6 +429,53 @@ int cri_window_should_close(cri_Window *window) {
 void cri_poll_events(void) {
     REQUIRE_INIT();
     cri__platform_poll_events();
+}
+
+int cri_update_buffer(cri_Window *window, void *buffer, int width, int height) {
+    assert(window != NULL);
+    assert(buffer != NULL);
+    assert(width >= 0);
+    assert(height >= 0);
+
+    REQUIRE_INIT_OR_RETURN(0);
+
+    if (width <= 0 || height <= 0) {
+        cri__error(CRI_INVALID_VALUE, "invalid buffer size");
+        return CRI_FALSE;
+    }
+
+    window->buffer = buffer;
+    window->buffer_width = width;
+    window->buffer_height = height;
+
+    window->bmi->bmiHeader.biWidth = width;
+    window->bmi->bmiHeader.biHeight = -(LONG) height;
+    InvalidateRect(window->hwnd, NULL, TRUE);
+    SendMessage(window->hwnd, WM_PAINT, 0, 0);
+
+    return CRI_TRUE;
+}
+
+int cri_set_viewport(cri_Window *window, int ox, int oy, int width, int height) {
+    assert(window != NULL);
+    assert(ox >= 0);
+    assert(oy >= 0);
+    assert(width >= 0);
+    assert(height >= 0);
+
+    REQUIRE_INIT_OR_RETURN(0);
+
+    if (ox + width > window->width || oy + height > window->height) {
+        cri__error(CRI_INVALID_VALUE, "invalid viewport size");
+        return CRI_FALSE;
+    }
+
+    window->viewport_ox = ox;
+    window->viewport_oy = oy;
+    window->viewport_width = width;
+    window->viewport_height = height;
+
+    return CRI_TRUE;
 }
 
 #endif /* CRI_IMPL */
