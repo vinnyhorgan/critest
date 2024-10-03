@@ -152,6 +152,8 @@ static void cri__error(int error, const char *format, ...) {
      ███ ███  ██ ██   ████ ██████   ██████   ███ ███  ███████
 */
 
+#ifdef _WIN32
+
 static WCHAR* cri__wide_string_from_utf8(const char *source) {
     WCHAR *target;
     int count;
@@ -334,6 +336,29 @@ static void cri__platform_poll_events(void) {
     }
 }
 
+static void cri__platform_update_buffer(cri_Window *window) {
+    window->bmi->bmiHeader.biWidth = window->buffer_width;
+    window->bmi->bmiHeader.biHeight = -(LONG) window->buffer_height;
+    InvalidateRect(window->hwnd, NULL, TRUE);
+    SendMessage(window->hwnd, WM_PAINT, 0, 0);
+}
+
+#endif
+
+/*
+    ██      ██ ███    ██ ██    ██ ██   ██
+    ██      ██ ████   ██ ██    ██  ██ ██
+    ██      ██ ██ ██  ██ ██    ██   ███
+    ██      ██ ██  ██ ██ ██    ██  ██ ██
+    ███████ ██ ██   ████  ██████  ██   ██
+*/
+
+#ifdef __linux__
+
+// LINUX HERE
+
+#endif
+
 /*
     ██████  ██    ██ ██████  ██      ██  ██████
     ██   ██ ██    ██ ██   ██ ██      ██ ██
@@ -448,10 +473,7 @@ int cri_update_buffer(cri_Window *window, void *buffer, int width, int height) {
     window->buffer_width = width;
     window->buffer_height = height;
 
-    window->bmi->bmiHeader.biWidth = width;
-    window->bmi->bmiHeader.biHeight = -(LONG) height;
-    InvalidateRect(window->hwnd, NULL, TRUE);
-    SendMessage(window->hwnd, WM_PAINT, 0, 0);
+    cri__platform_update_buffer(window);
 
     return CRI_TRUE;
 }
