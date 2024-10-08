@@ -12,6 +12,28 @@ extern "C" {
 #define CRI_TRUE     1
 #define CRI_FALSE    0
 
+#define CRI_RELEASE    0
+#define CRI_PRESS      1
+#define CRI_REPEAT     2
+
+#define CRI_MOUSE_BUTTON_1         0
+#define CRI_MOUSE_BUTTON_2         1
+#define CRI_MOUSE_BUTTON_3         2
+#define CRI_MOUSE_BUTTON_4         3
+#define CRI_MOUSE_BUTTON_5         4
+#define CRI_MOUSE_BUTTON_6         5
+#define CRI_MOUSE_BUTTON_7         6
+#define CRI_MOUSE_BUTTON_8         7
+#define CRI_MOUSE_BUTTON_LAST      CRI_MOUSE_BUTTON_8
+#define CRI_MOUSE_BUTTON_LEFT      CRI_MOUSE_BUTTON_1
+#define CRI_MOUSE_BUTTON_RIGHT     CRI_MOUSE_BUTTON_2
+#define CRI_MOUSE_BUTTON_MIDDLE    CRI_MOUSE_BUTTON_3
+
+#define CRI_MOD_SHIFT      0x0001
+#define CRI_MOD_CONTROL    0x0002
+#define CRI_MOD_ALT        0x0004
+#define CRI_MOD_SUPER      0x0008
+
 #define CRI_NOT_INITIALIZED    0x00010001
 #define CRI_INVALID_VALUE      0x00010002
 #define CRI_OUT_OF_MEMORY      0x00010003
@@ -22,6 +44,8 @@ extern "C" {
 typedef struct cri_Window cri_Window;
 
 typedef void (*cri_ErrorCallback)(int error, const char *description);
+typedef void (*cri_WindowSizeCallback)(cri_Window *window, int width, int height);
+typedef void (*cri_MouseButtonCallback)(cri_Window *window, int button, int action, int mods);
 
 int cri_init(void);
 void cri_terminate(void);
@@ -29,7 +53,10 @@ void cri_set_error_callback(cri_ErrorCallback callback);
 cri_Window* cri_create_window(int width, int height, const char *title);
 void cri_destroy_window(cri_Window *window);
 int cri_window_should_close(cri_Window *window);
+void cri_set_window_size_callback(cri_Window *window, cri_WindowSizeCallback callback);
+void cri_set_mouse_button_callback(cri_Window *window, cri_MouseButtonCallback callback);
 void cri_poll_events(void);
+void cri_get_cursor_pos(cri_Window *window, double *x, double *y);
 
 int cri_update_buffer(cri_Window *window, void *buffer, int width, int height);
 int cri_set_viewport(cri_Window *window, int ox, int oy, int width, int height);
@@ -96,6 +123,11 @@ struct cri_Window {
     int buffer_width, buffer_height;
     int viewport_ox, viewport_oy, viewport_width, viewport_height;
 
+    char mouse_buttons[CRI_MOUSE_BUTTON_LAST + 1];
+
+    cri_WindowSizeCallback window_size_callback;
+    cri_MouseButtonCallback mouse_button_callback;
+
 #ifdef _WIN32
     HWND hwnd;
     HDC hdc;
@@ -144,6 +176,16 @@ static void cri__error(int error, const char *format, ...) {
     }
 }
 
+static void cri__input_mouse_button(cri_Window *window, int button, int action, int mods) {
+    if (button < 0 || button > CRI_MOUSE_BUTTON_LAST)
+        return;
+
+    window->mouse_buttons[button] = (char) action;
+
+    if (window->mouse_button_callback)
+        window->mouse_button_callback(window, button, action, mods);
+}
+
 /*
     ██     ██ ██ ███    ██ ██████   ██████  ██     ██ ███████
     ██     ██ ██ ████   ██ ██   ██ ██    ██ ██     ██ ██
@@ -185,6 +227,21 @@ static DWORD cri__get_window_style(cri_Window *window) {
     return style;
 }
 
+static int cri__get_key_mods(void) {
+    int mods = 0;
+
+    if (GetKeyState(VK_SHIFT) & (1 << 31))
+        mods |= CRI_MOD_SHIFT;
+    if (GetKeyState(VK_CONTROL) & (1 << 31))
+        mods |= CRI_MOD_CONTROL;
+    if (GetKeyState(VK_MENU) & (1 << 31))
+        mods |= CRI_MOD_ALT;
+    if ((GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & (1 << 31))
+        mods |= CRI_MOD_SUPER;
+
+    return mods;
+}
+
 static LRESULT CALLBACK cri__window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     cri_Window *window = GetPropW(hwnd, L"CRI");
     if (!window)
@@ -201,6 +258,43 @@ static LRESULT CALLBACK cri__window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
             break;
         }
 
+        case WM_LBUTTONDOWN:
+        case WM_RBUTTONDOWN:
+        case WM_MBUTTONDOWN:
+        case WM_XBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_RBUTTONUP:
+        case WM_MBUTTONUP:
+        case WM_XBUTTONUP: {
+            int button, action;
+
+            if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)
+                button = CRI_MOUSE_BUTTON_LEFT;
+            else if (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP)
+                button = CRI_MOUSE_BUTTON_RIGHT;
+            else if (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP)
+                button = CRI_MOUSE_BUTTON_MIDDLE;
+            else if (GET_XBUTTON_WPARAM(wparam) == XBUTTON1)
+                button = CRI_MOUSE_BUTTON_4;
+            else
+                button = CRI_MOUSE_BUTTON_5;
+
+            if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN) {
+                action = CRI_PRESS;
+                SetCapture(hwnd);
+            } else {
+                action = CRI_RELEASE;
+                ReleaseCapture();
+            }
+
+            cri__input_mouse_button(window, button, action, cri__get_key_mods());
+
+            if (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP)
+                return TRUE;
+
+            return 0;
+        }
+
         case WM_SIZE: {
             window->width = LOWORD(lparam);
             window->height = HIWORD(lparam);
@@ -209,6 +303,10 @@ static LRESULT CALLBACK cri__window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
             window->viewport_width = window->width;
             window->viewport_height = window->height;
             BitBlt(window->hdc, 0, 0, window->width, window->height, 0, 0, 0, BLACKNESS);
+
+            if (window->window_size_callback)
+                window->window_size_callback(window, LOWORD(lparam), HIWORD(lparam));
+
             return 0;
         }
 
@@ -336,6 +434,17 @@ static void cri__platform_poll_events(void) {
     }
 }
 
+static void cri__platform_get_cursor_pos(cri_Window *window, double *x, double *y) {
+    POINT pos;
+
+    if (GetCursorPos(&pos)) {
+        ScreenToClient(window->hwnd, &pos);
+
+        if (x) *x = pos.x;
+        if (y) *y = pos.y;
+    }
+}
+
 static void cri__platform_update_buffer(cri_Window *window) {
     window->bmi->bmiHeader.biWidth = window->buffer_width;
     window->bmi->bmiHeader.biHeight = -(LONG) window->buffer_height;
@@ -451,9 +560,32 @@ int cri_window_should_close(cri_Window *window) {
     return window->should_close;
 }
 
+void cri_set_window_size_callback(cri_Window *window, cri_WindowSizeCallback callback) {
+    assert(window != NULL);
+    REQUIRE_INIT();
+    window->window_size_callback = callback;
+}
+
+void cri_set_mouse_button_callback(cri_Window *window, cri_MouseButtonCallback callback) {
+    assert(window != NULL);
+    REQUIRE_INIT();
+    window->mouse_button_callback = callback;
+}
+
 void cri_poll_events(void) {
     REQUIRE_INIT();
     cri__platform_poll_events();
+}
+
+void cri_get_cursor_pos(cri_Window *window, double *x, double *y) {
+    assert(window != NULL);
+
+    if (x) *x = 0;
+    if (y) *y = 0;
+
+    REQUIRE_INIT();
+
+    cri__platform_get_cursor_pos(window, x, y);
 }
 
 int cri_update_buffer(cri_Window *window, void *buffer, int width, int height) {
